@@ -214,42 +214,45 @@ class TestSessionIsolationAndReset:
 
 class TestFastAPIRoutesAndReplayLifecycle:
 
-    @pytest.mark.asyncio
-    async def test_replay_service_lifecycle(self):
-        emitted_obs = []
+    def test_replay_service_lifecycle(self):
+        import anyio
+        async def _run_lifecycle():
+            emitted_obs = []
 
-        def on_obs(obs):
-            emitted_obs.append(obs)
+            def on_obs(obs):
+                emitted_obs.append(obs)
 
-        svc = ReplayService(on_observation_cb=on_obs)
-        await svc.start(patient_id="100", speed=5.0)
-        assert svc.status == ReplayStatus.RUNNING
+            svc = ReplayService(on_observation_cb=on_obs)
+            await svc.start(patient_id="100", speed=5.0)
+            assert svc.status == ReplayStatus.RUNNING
 
-        # Allow loop to emit 2-3 chunks
-        await asyncio.sleep(0.3)
-        assert len(emitted_obs) > 0
-        assert svc.current_sample_idx > 0
+            # Allow loop to emit 2-3 chunks
+            await asyncio.sleep(0.3)
+            assert len(emitted_obs) > 0
+            assert svc.current_sample_idx > 0
 
-        # Pause
-        await svc.pause()
-        assert svc.status == ReplayStatus.PAUSED
-        idx_paused = svc.current_sample_idx
-        await asyncio.sleep(0.15)
-        assert svc.current_sample_idx == idx_paused  # No advance while paused
+            # Pause
+            await svc.pause()
+            assert svc.status == ReplayStatus.PAUSED
+            idx_paused = svc.current_sample_idx
+            await asyncio.sleep(0.15)
+            assert svc.current_sample_idx == idx_paused  # No advance while paused
 
-        # Resume
-        await svc.resume()
-        assert svc.status == ReplayStatus.RUNNING
-        await asyncio.sleep(0.15)
-        assert svc.current_sample_idx > idx_paused
+            # Resume
+            await svc.resume()
+            assert svc.status == ReplayStatus.RUNNING
+            await asyncio.sleep(0.15)
+            assert svc.current_sample_idx > idx_paused
 
-        # Seek
-        svc.seek(timestamp_seconds=2.0)
-        assert svc.current_sample_idx == int(2.0 * 360.0)
+            # Seek
+            svc.seek(timestamp_seconds=2.0)
+            assert svc.current_sample_idx == int(2.0 * 360.0)
 
-        # Stop
-        await svc.stop()
-        assert svc.status == ReplayStatus.STOPPED
+            # Stop
+            await svc.stop()
+            assert svc.status == ReplayStatus.STOPPED
+
+        anyio.run(_run_lifecycle)
 
     def test_rest_endpoints_health_and_ingest(self):
         client = TestClient(app)
@@ -259,6 +262,9 @@ class TestFastAPIRoutesAndReplayLifecycle:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "healthy"
+
+        # Select session for patient 100
+        client.post("/twin/select-session?patient_id=100&session_id=SESSION_DEFAULT")
 
         # 2. Ingest valid observation
         payload = {

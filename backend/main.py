@@ -12,6 +12,7 @@ Provides endpoints for:
 
 import asyncio
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 import time
 from typing import Dict, List, Optional
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -125,14 +126,20 @@ async def reset_twin(patient_id: Optional[str] = None, session_id: Optional[str]
 
 @app.post("/ingest/observation")
 def ingest_observation(obs: RawObservation):
+    if obs.patient_id != current_patient_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Mismatched patient ID: current session is '{current_patient_id}', but observation has '{obs.patient_id}'.",
+        )
     engine = get_or_create_engine(obs.patient_id, obs.session_id)
     accepted = engine.ingest_observation(obs)
     if not accepted:
         raise HTTPException(
             status_code=400,
-            detail="Observation rejected (mismatched patient, duplicate, or stale timestamp).",
+            detail="Observation rejected (duplicate or stale timestamp).",
         )
     return {"status": "accepted", "modality": obs.modality, "timestamp": obs.timestamp}
+
 
 
 @app.get("/twin/history")
