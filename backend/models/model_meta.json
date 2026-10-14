@@ -1,0 +1,37 @@
+{
+  "version": "1.0.0-baseline-reproducible",
+  "dataset": "Synthetic Multimodal Fixture",
+  "train_patients": [
+    "SYNTH_PAT_101",
+    "SYNTH_PAT_106",
+    "SYNTH_PAT_108",
+    "SYNTH_PAT_119"
+  ],
+  "test_patients": [
+    "SYNTH_PAT_100",
+    "SYNTH_PAT_103"
+  ],
+  "num_train_samples": 617,
+  "num_test_samples": 225,
+  "classes": [
+    "N",
+    "V"
+  ],
+  "macro_f1": 1.0,
+  "accuracy": 1.0,
+  "is_synthetic": true,
+  "metrics": {
+    "N": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 188
+    },
+    "V": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 37
+    }
+  }
+}
