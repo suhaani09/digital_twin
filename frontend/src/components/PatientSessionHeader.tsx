@@ -24,6 +24,11 @@ export const PatientSessionHeader: React.FC<PatientSessionHeaderProps> = ({
   const [selectedPid, setSelectedPid] = useState(patientId);
   const [isLoading, setIsLoading] = useState(false);
 
+  // Sync selectedPid when patientId prop changes from parent
+  React.useEffect(() => {
+    setSelectedPid(patientId);
+  }, [patientId]);
+
   const availablePatients = ['100', '101', '103', '106', '108', '119', '205'];
 
   const handlePatientSelect = async (newPid: string) => {

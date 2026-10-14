@@ -12,8 +12,19 @@ export function useDigitalTwinWebSocket(onStateReceived?: (state: DigitalTwinSta
   const reconnectTimeoutRef = useRef<number | null>(null);
   const isUnmountedRef = useRef(false);
 
+  // Keep callback reference updated without triggering re-connection
+  const onStateReceivedRef = useRef(onStateReceived);
+  useEffect(() => {
+    onStateReceivedRef.current = onStateReceived;
+  }, [onStateReceived]);
+
   const connect = useCallback(() => {
     if (isUnmountedRef.current) return;
+
+    // If an existing socket is OPEN or CONNECTING, do not create a duplicate
+    if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
 
     setStatus('connecting');
     setErrorMsg(null);
@@ -33,8 +44,8 @@ export function useDigitalTwinWebSocket(onStateReceived?: (state: DigitalTwinSta
         try {
           const state: DigitalTwinState = JSON.parse(event.data);
           setLatestState(state);
-          if (onStateReceived) {
-            onStateReceived(state);
+          if (onStateReceivedRef.current) {
+            onStateReceivedRef.current(state);
           }
         } catch (err: any) {
           console.error('Failed to parse WebSocket message:', err);
@@ -51,6 +62,9 @@ export function useDigitalTwinWebSocket(onStateReceived?: (state: DigitalTwinSta
         if (isUnmountedRef.current) return;
         setStatus('disconnected');
         // Auto-reconnect after 2 seconds
+        if (reconnectTimeoutRef.current) {
+          clearTimeout(reconnectTimeoutRef.current);
+        }
         reconnectTimeoutRef.current = window.setTimeout(() => {
           connect();
         }, 2000);
@@ -58,11 +72,14 @@ export function useDigitalTwinWebSocket(onStateReceived?: (state: DigitalTwinSta
     } catch (err: any) {
       setStatus('error');
       setErrorMsg(err?.message || 'WebSocket connection failed');
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
       reconnectTimeoutRef.current = window.setTimeout(() => {
         connect();
       }, 3000);
     }
-  }, [onStateReceived]);
+  }, []); // zero dynamic dependencies -> persistent single connection
 
   useEffect(() => {
     isUnmountedRef.current = false;

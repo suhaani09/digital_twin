@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { ApiClient } from './api';
 import { useDigitalTwinWebSocket } from './useWebSocket';
 import type { DigitalTwinState, ScenarioDefinition } from './types';
@@ -21,8 +21,8 @@ export function App() {
   const [bpTrend, setBpTrend] = useState<number[]>([]);
   const [presets, setPresets] = useState<ScenarioDefinition[]>([]);
 
-  // Connect WebSocket to real backend
-  const { status: wsStatus, latestState } = useDigitalTwinWebSocket((state: DigitalTwinState) => {
+  // Connect WebSocket to real backend with stable callback
+  const handleStateReceived = useCallback((state: DigitalTwinState) => {
     // Update trends (bounded to 60 points)
     if (state.heart_rate_bpm !== null && state.heart_rate_bpm !== undefined) {
       setHrTrend((prev) => [...prev.slice(-59), state.heart_rate_bpm!]);
@@ -33,20 +33,28 @@ export function App() {
     if (state.hemodynamics?.systolic_bp_mmhg) {
       setBpTrend((prev) => [...prev.slice(-59), state.hemodynamics!.systolic_bp_mmhg]);
     }
-  });
+  }, []);
 
-  // Fetch preset scenarios on mount
+  const { status: wsStatus, latestState } = useDigitalTwinWebSocket(handleStateReceived);
+
+  // Fetch preset scenarios & initial twin state immediately on mount (eliminating initial blank delay)
   useEffect(() => {
-    async function loadPresets() {
+    async function initDashboard() {
       try {
-        const res = await ApiClient.listPresetScenarios();
-        setPresets(res.scenarios);
+        const [presetsRes, stateRes] = await Promise.all([
+          ApiClient.listPresetScenarios(),
+          ApiClient.getTwinState('100'),
+        ]);
+        setPresets(presetsRes.scenarios);
+        if (stateRes) {
+          handleStateReceived(stateRes);
+        }
       } catch (err) {
-        console.error('Failed to load preset scenarios:', err);
+        console.error('Failed to initialize dashboard data:', err);
       }
     }
-    loadPresets();
-  }, []);
+    initDashboard();
+  }, [handleStateReceived]);
 
   const handlePatientChanged = (newPid: string) => {
     setPatientId(newPid);
