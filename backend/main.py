@@ -15,13 +15,17 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict
 import time
 from typing import Dict, List, Optional
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
 
+import numpy as np
+from backend.event_store import ClinicalEvent, event_store
+from backend.evidence_ingestion import evidence_service
 from backend.fusion import MultimodalFusionEngine
 from backend.replay_engine import ReplayService, ReplayStatus
 from backend.schemas import (
     DigitalTwinState,
+    ModalityType,
     PatientContext,
     RawObservation,
     ReplayControlRequest,
@@ -178,14 +182,59 @@ async def control_replay(req: ReplayControlRequest):
             session_id=current_session_id,
             speed=req.speed or 1.0,
         )
+        event_store.record_event(
+            ClinicalEvent(
+                event_id=f"REPLAY_START_{int(time.time()*1000)}",
+                session_id=current_session_id,
+                timestamp=0.0,
+                event_type="REPLAY",
+                severity="INFO",
+                description=f"ECG Replay started for Patient {p_id} at {req.speed or 1.0}x speed.",
+                source_provenance=f"MIT-BIH Record {p_id}",
+                category="OBSERVED",
+            )
+        )
+    elif action == "restart":
+        replay_service.seek(0.0)
+        engine = get_or_create_engine(current_patient_id, current_session_id)
+        engine.reset_state()
+        await replay_service.resume()
+        event_store.record_event(
+            ClinicalEvent(
+                event_id=f"REPLAY_RESTART_{int(time.time()*1000)}",
+                session_id=current_session_id,
+                timestamp=0.0,
+                event_type="REPLAY",
+                severity="INFO",
+                description="ECG Replay restarted from t=0.0s.",
+                source_provenance=f"MIT-BIH Record {current_patient_id}",
+                category="OBSERVED",
+            )
+        )
     elif action == "pause":
         await replay_service.pause()
     elif action == "resume":
         await replay_service.resume()
     elif action == "stop":
         await replay_service.stop()
+        event_store.record_event(
+            ClinicalEvent(
+                event_id=f"REPLAY_STOP_{int(time.time()*1000)}",
+                session_id=current_session_id,
+                timestamp=round(replay_service.current_sample_idx / replay_service.fs if replay_service.fs else 0.0, 2),
+                event_type="REPLAY",
+                severity="INFO",
+                description="ECG Replay stopped.",
+                source_provenance=f"MIT-BIH Record {current_patient_id}",
+                category="OBSERVED",
+            )
+        )
     elif action == "seek" and req.seek_seconds is not None:
         replay_service.seek(req.seek_seconds)
+    elif action == "step_forward":
+        replay_service.step_window(window_sec=2.0, forward=True)
+    elif action == "step_backward":
+        replay_service.step_window(window_sec=2.0, forward=False)
     elif action == "speed" and req.speed is not None:
         replay_service.set_speed(req.speed)
     elif action == "reset":
@@ -193,6 +242,7 @@ async def control_replay(req: ReplayControlRequest):
         key = f"{current_patient_id}_{current_session_id}"
         if key in active_engines:
             active_engines[key].reset_state()
+        event_store.clear_session(current_session_id)
     else:
         raise HTTPException(status_code=400, detail=f"Unsupported action: {action}")
 
@@ -202,6 +252,7 @@ async def control_replay(req: ReplayControlRequest):
         "patient_id": current_patient_id,
         "session_id": current_session_id,
         "speed": replay_service.speed,
+        "current_time_sec": round(replay_service.current_sample_idx / replay_service.fs if replay_service.fs else 0.0, 3),
     }
 
 
@@ -298,9 +349,203 @@ async def run_scenario_experiment(req: ScenarioRunRequest):
             scenario_input=scenario_input,
             duration_sec=req.duration_sec,
         )
+        # Record scenario execution event
+        engine = get_or_create_engine(current_patient_id, current_session_id)
+        scen_id = result.scenario_id
+        delta_co = result.deltas.get("cardiac_output_l_min", 0.0) if result.deltas else 0.0
+        event_store.record_event(
+            ClinicalEvent(
+                event_id=f"SCENARIO_{scen_id}_{int(time.time()*1000)}",
+                session_id=current_session_id,
+                timestamp=round(engine.current_sim_time, 2),
+                event_type="SCENARIO",
+                severity="INFO",
+                description=f"What-If Scenario '{result.title}' executed (Delta CO: {delta_co:+.2f} L/min).",
+                source_provenance="Cardiovascular ODE Engine",
+                category="SIMULATED",
+                metadata={
+                    "scenario_id": scen_id,
+                    "deltas": result.deltas,
+                    "baseline_summary": result.baseline_summary,
+                },
+            )
+        )
         return asdict(result)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# =====================================================================
+# ECG Recording Explorer & Time-Aware Inspection Endpoints
+# =====================================================================
+
+@app.get("/ecg/metadata")
+def get_ecg_metadata():
+    """Returns timing, frequency, sample count, and duration of active recording."""
+    return replay_service.get_metadata()
+
+
+@app.get("/ecg/window")
+def get_ecg_window(
+    timestamp: float = Query(..., description="Target center timestamp in seconds"),
+    window_sec: float = Query(2.0, description="Window size in seconds (e.g. 1.0 to 10.0)"),
+):
+    """
+    Returns windowed ECG samples centered around the requested timestamp.
+    Does not mutate or interrupt active playback replay.
+    """
+    if window_sec < 0.2 or window_sec > 30.0:
+        raise HTTPException(status_code=400, detail="window_sec must be between 0.2 and 30.0 seconds")
+    return replay_service.get_window(center_timestamp_sec=timestamp, window_sec=window_sec)
+
+
+# =====================================================================
+# Clinical Evidence Ingestion Endpoints (CSV, PDF, Telemetry)
+# =====================================================================
+
+@app.post("/evidence/upload")
+async def upload_evidence(
+    file: UploadFile = File(...),
+    patient_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+):
+    """
+    Secure evidence upload endpoint. Supports CSV (ECG, vitals) and PDF clinical reports.
+    Computes cryptographic SHA-256 hash, parses content, and records to Event Store.
+    """
+    p_id = patient_id or current_patient_id
+    s_id = session_id or current_session_id
+    engine = get_or_create_engine(p_id, s_id)
+
+    filename = file.filename or "unknown_file"
+    file_bytes = await file.read()
+    if len(file_bytes) == 0:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    if len(file_bytes) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File exceeds maximum 25 MB limit.")
+
+    ext = filename.split(".")[-1].lower() if "." in filename else ""
+
+    try:
+        if ext == "csv":
+            summary, observations = evidence_service.process_csv_evidence(
+                file_bytes=file_bytes,
+                filename=filename,
+                session_id=s_id,
+                patient_id=p_id,
+            )
+            # Ingest extracted observations into digital twin engine
+            for obs in observations:
+                engine.ingest_observation(obs)
+                # If custom ECG was uploaded, load into replay service
+                if obs.modality == ModalityType.ECG_CHUNK and "samples" in obs.values:
+                    samples_arr = np.array(obs.values["samples"], dtype=np.float32)
+                    fs_val = float(obs.values.get("fs", 360.0))
+                    replay_service.load_custom_signal(
+                        signal_array=samples_arr,
+                        fs=fs_val,
+                        patient_id=p_id,
+                        session_id=s_id,
+                        provenance=f"Uploaded CSV ({filename})",
+                    )
+
+            return {
+                "status": "success",
+                "filename": filename,
+                "file_type": "CSV",
+                "summary": summary,
+                "observations_ingested": len(observations),
+            }
+
+        elif ext == "pdf":
+            summary, _ = evidence_service.process_pdf_evidence(
+                file_bytes=file_bytes,
+                filename=filename,
+                session_id=s_id,
+                patient_id=p_id,
+            )
+            return {
+                "status": "success",
+                "filename": filename,
+                "file_type": "PDF",
+                "summary": summary,
+                "observations_ingested": 0,
+            }
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type '.{ext}'. Supported types: .csv (ECG/vitals), .pdf (documents).",
+            )
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+
+
+@app.get("/evidence/list")
+def list_evidence(session_id: Optional[str] = None):
+    """Lists registered evidence items with SHA-256 hashes and extraction summaries."""
+    s_id = session_id or current_session_id
+    return {"session_id": s_id, "evidence": event_store.list_evidence(s_id)}
+
+
+# =====================================================================
+# Clinical Event Timeline & Audit Log Endpoints
+# =====================================================================
+
+@app.get("/events")
+def get_clinical_events(
+    session_id: Optional[str] = None,
+    event_type: Optional[str] = None,
+    severity: Optional[str] = None,
+    category: Optional[str] = None,
+    min_timestamp: Optional[float] = None,
+    max_timestamp: Optional[float] = None,
+    limit: int = Query(100, ge=1, le=500),
+):
+    """
+    Returns filtered clinical events and audit logs from persistent SQLite store.
+    """
+    s_id = session_id or current_session_id
+    events = event_store.query_events(
+        session_id=s_id,
+        event_type=event_type,
+        severity=severity,
+        category=category,
+        min_timestamp=min_timestamp,
+        max_timestamp=max_timestamp,
+        limit=limit,
+    )
+    return {
+        "session_id": s_id,
+        "count": len(events),
+        "events": [e.model_dump() for e in events],
+    }
+
+
+@app.get("/twin/state-at")
+def get_state_at_timestamp(timestamp: float = Query(..., description="Target historical timestamp in seconds")):
+    """
+    Reconstructs the twin's observable state at the requested timestamp.
+    Does not leak future observations.
+    """
+    engine = get_or_create_engine(current_patient_id, current_session_id)
+    # Find matching observations up to target timestamp
+    past_obs = [o for o in engine.history_observations if o.timestamp <= timestamp]
+    ecg_window = replay_service.get_window(center_timestamp_sec=timestamp, window_sec=2.0)
+
+    # Reconstruct last known vitals at or before target timestamp
+    last_hr = next((o.values.get("bpm") for o in reversed(past_obs) if o.modality.value == "heart_rate"), None)
+    last_glu = next((o.values.get("mg_dl") for o in reversed(past_obs) if o.modality.value == "blood_glucose"), None)
+
+    return {
+        "timestamp": timestamp,
+        "patient_id": current_patient_id,
+        "session_id": current_session_id,
+        "is_historical_reconstruction": True,
+        "ecg_window": ecg_window,
+        "heart_rate_bpm": last_hr,
+        "blood_glucose_mg_dl": last_glu,
+        "observations_count_up_to_time": len(past_obs),
+    }
 
 
 @app.websocket("/ws")

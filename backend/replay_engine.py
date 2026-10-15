@@ -97,6 +97,80 @@ class ReplayService:
         target_sample = int(timestamp_seconds * self.fs)
         self.current_sample_idx = max(0, min(self.total_samples - 1, target_sample))
 
+    def step_window(self, window_sec: float = 2.0, forward: bool = True):
+        """Steps forward or backward by window_sec."""
+        delta = int(window_sec * self.fs)
+        if forward:
+            self.current_sample_idx = min(self.total_samples - 1, self.current_sample_idx + delta)
+        else:
+            self.current_sample_idx = max(0, self.current_sample_idx - delta)
+
+    def load_custom_signal(
+        self,
+        signal_array: np.ndarray,
+        fs: float = 360.0,
+        patient_id: str = "custom",
+        session_id: str = "SESSION_UPLOAD",
+        provenance: str = "User Uploaded ECG",
+    ):
+        """Loads an externally parsed/uploaded ECG signal into the replay service."""
+        self.patient_id = patient_id
+        self.session_id = session_id
+        self.signal_data = np.asarray(signal_array, dtype=np.float32)
+        self.fs = float(fs)
+        self.total_samples = len(self.signal_data)
+        self.is_synthetic = False
+        self.current_sample_idx = 0
+
+    def get_metadata(self) -> dict:
+        """Returns metadata for the currently active recording."""
+        if self.signal_data is None:
+            self.load_patient_record(self.patient_id)
+        duration_sec = self.total_samples / self.fs if self.fs > 0 else 0.0
+        current_time = self.current_sample_idx / self.fs if self.fs > 0 else 0.0
+        return {
+            "patient_id": self.patient_id,
+            "session_id": self.session_id,
+            "fs": self.fs,
+            "total_samples": self.total_samples,
+            "duration_sec": round(duration_sec, 3),
+            "current_time_sec": round(current_time, 3),
+            "channel_lead": "Lead II (MLII)",
+            "unit": "mV",
+            "is_synthetic": self.is_synthetic,
+            "source_type": "replay_dataset" if not self.is_synthetic else "synthetic_fixture",
+            "provenance": f"MIT-BIH Record {self.patient_id}" if not self.is_synthetic else "Synthetic Fixture",
+            "status": self.status.value,
+            "speed": self.speed,
+        }
+
+    def get_window(self, center_timestamp_sec: float, window_sec: float = 2.0) -> dict:
+        """Returns a window of samples centered around center_timestamp_sec without mutating replay state."""
+        if self.signal_data is None:
+            self.load_patient_record(self.patient_id)
+
+        center_idx = int(center_timestamp_sec * self.fs)
+        half_samples = int((window_sec / 2.0) * self.fs)
+
+        start_idx = max(0, center_idx - half_samples)
+        end_idx = min(self.total_samples, center_idx + half_samples)
+
+        samples = [round(float(s), 4) for s in self.signal_data[start_idx:end_idx]]
+        actual_start_sec = start_idx / self.fs if self.fs > 0 else 0.0
+        actual_end_sec = end_idx / self.fs if self.fs > 0 else 0.0
+
+        return {
+            "center_timestamp_sec": round(center_timestamp_sec, 3),
+            "window_sec": window_sec,
+            "start_time_sec": round(actual_start_sec, 3),
+            "end_time_sec": round(actual_end_sec, 3),
+            "sample_count": len(samples),
+            "fs": self.fs,
+            "samples": samples,
+            "unit": "mV",
+            "lead": "Lead II (MLII)",
+        }
+
     def set_speed(self, speed: float):
         self.speed = max(0.2, min(10.0, speed))
 

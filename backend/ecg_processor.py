@@ -13,7 +13,12 @@ Handles:
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 import numpy as np
-from scipy.signal import butter, filtfilt, iirnotch
+
+try:
+    from scipy.signal import butter, filtfilt, iirnotch
+    HAS_SCIPY = True
+except Exception:
+    HAS_SCIPY = False
 
 
 @dataclass
@@ -33,12 +38,34 @@ def butter_bandpass_filter(
     fs: float = 360.0,
     order: int = 3,
 ) -> np.ndarray:
-    """Zero-phase Butterworth bandpass filter to remove baseline wander and HF noise."""
-    nyq = 0.5 * fs
-    low = max(0.001, lowcut / nyq)
-    high = min(0.999, highcut / nyq)
-    b, a = butter(order, [low, high], btype="band")
-    return filtfilt(b, a, data)
+    """Zero-phase Butterworth bandpass filter with pure numpy moving-window fallback."""
+    if len(data) == 0:
+        return data
+    if HAS_SCIPY:
+        try:
+            nyq = 0.5 * fs
+            low = max(0.001, lowcut / nyq)
+            high = min(0.999, highcut / nyq)
+            b, a = butter(order, [low, high], btype="band")
+            return filtfilt(b, a, data)
+        except Exception:
+            pass
+
+    # Pure NumPy zero-phase baseline subtraction and high-frequency smoothing fallback
+    arr = np.copy(data)
+    # 1. Baseline wander removal via moving average filter
+    baseline_win = max(3, int(fs * 0.4))
+    if len(arr) > baseline_win:
+        kernel = np.ones(baseline_win) / baseline_win
+        baseline = np.convolve(arr, kernel, mode="same")
+        arr = arr - baseline
+
+    # 2. High-frequency noise suppression via 5-point moving average
+    smooth_win = max(3, int(fs / highcut))
+    if len(arr) > smooth_win:
+        kernel = np.ones(smooth_win) / smooth_win
+        arr = np.convolve(arr, kernel, mode="same")
+    return arr
 
 
 def notch_filter(
@@ -47,13 +74,18 @@ def notch_filter(
     fs: float = 360.0,
     quality_factor: float = 30.0,
 ) -> np.ndarray:
-    """IIR Notch filter to eliminate powerline interference (50 Hz or 60 Hz)."""
-    nyq = 0.5 * fs
-    if freq >= nyq:
+    """IIR Notch filter with fallback to preserve signal if scipy is blocked."""
+    if not HAS_SCIPY or len(data) == 0:
         return data
-    w0 = freq / nyq
-    b, a = iirnotch(w0, quality_factor)
-    return filtfilt(b, a, data)
+    try:
+        nyq = 0.5 * fs
+        if freq >= nyq:
+            return data
+        w0 = freq / nyq
+        b, a = iirnotch(w0, quality_factor)
+        return filtfilt(b, a, data)
+    except Exception:
+        return data
 
 
 def assess_signal_quality(

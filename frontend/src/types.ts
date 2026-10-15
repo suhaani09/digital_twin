@@ -153,3 +153,60 @@ export interface RawObservationItem {
   provenance: string;
 }
 
+export interface ECGRecordingMetadata {
+  patient_id: string;
+  session_id: string;
+  fs: number;
+  total_samples: number;
+  duration_sec: number;
+  current_time_sec: number;
+  channel_lead: string;
+  unit: string;
+  is_synthetic: boolean;
+  source_type: string;
+  provenance: string;
+  status: string;
+  speed: number;
+}
+
+export interface ECGWindowResponse {
+  center_timestamp_sec: number;
+  window_sec: number;
+  start_time_sec: number;
+  end_time_sec: number;
+  sample_count: number;
+  fs: number;
+  samples: number[];
+  unit: string;
+  lead: string;
+}
+
+export interface ClinicalEventItem {
+  event_id: string;
+  session_id: string;
+  timestamp: number;
+  event_type: 'REPLAY' | 'EVIDENCE_UPLOAD' | 'ML_INFERENCE' | 'ALERT' | 'SCENARIO' | 'SYSTEM' | string;
+  severity: 'INFO' | 'WARNING' | 'CRITICAL' | string;
+  description: string;
+  source_provenance: string;
+  evidence_id?: string | null;
+  category: 'OBSERVED' | 'DERIVED' | 'MODEL_GENERATED' | 'SIMULATED' | string;
+  metadata?: Record<string, any>;
+  created_at?: number;
+}
+
+export interface EvidenceItem {
+  evidence_id: string;
+  session_id: string;
+  filename: string;
+  file_type: string;
+  file_hash: string;
+  file_size_bytes: number;
+  upload_timestamp: number;
+  acquisition_timestamp?: number;
+  source_provenance: string;
+  extracted_summary: Record<string, any>;
+  status: string;
+}
+
+

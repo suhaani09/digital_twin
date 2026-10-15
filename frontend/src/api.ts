@@ -120,5 +120,70 @@ export class ApiClient {
       body: JSON.stringify(payload),
     });
   }
+
+  // --- Feature 1: Time-Aware ECG Explorer APIs ---
+  static async getECGMetadata() {
+    return this.request<import('./types').ECGRecordingMetadata>('/ecg/metadata');
+  }
+
+  static async getECGWindow(timestamp: number, windowSec: number = 2.0) {
+    return this.request<import('./types').ECGWindowResponse>(
+      `/ecg/window?timestamp=${encodeURIComponent(timestamp)}&window_sec=${encodeURIComponent(windowSec)}`
+    );
+  }
+
+  // --- Feature 2: Evidence Ingestion APIs ---
+  static async uploadEvidence(file: File, patientId?: string, sessionId?: string) {
+    const formData = new FormData();
+    formData.append('file', file);
+    const query = new URLSearchParams();
+    if (patientId) query.set('patient_id', patientId);
+    if (sessionId) query.set('session_id', sessionId);
+
+    const res = await fetch(`${CONFIG.API_BASE_URL}/evidence/upload?${query.toString()}`, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Upload error ${res.status}: ${err}`);
+    }
+    return res.json();
+  }
+
+  static async listEvidence(sessionId?: string) {
+    const query = new URLSearchParams();
+    if (sessionId) query.set('session_id', sessionId);
+    return this.request<{ session_id: string; evidence: import('./types').EvidenceItem[] }>(
+      `/evidence/list?${query.toString()}`
+    );
+  }
+
+  // --- Feature 3: Clinical Event Timeline & Audit Log APIs ---
+  static async getEvents(params?: {
+    session_id?: string;
+    event_type?: string;
+    severity?: string;
+    category?: string;
+    min_timestamp?: number;
+    max_timestamp?: number;
+    limit?: number;
+  }) {
+    const query = new URLSearchParams();
+    if (params?.session_id) query.set('session_id', params.session_id);
+    if (params?.event_type) query.set('event_type', params.event_type);
+    if (params?.severity) query.set('severity', params.severity);
+    if (params?.category) query.set('category', params.category);
+    if (params?.min_timestamp !== undefined) query.set('min_timestamp', String(params.min_timestamp));
+    if (params?.max_timestamp !== undefined) query.set('max_timestamp', String(params.max_timestamp));
+    if (params?.limit) query.set('limit', String(params.limit));
+
+    return this.request<{
+      session_id: string;
+      count: number;
+      events: import('./types').ClinicalEventItem[];
+    }>(`/events?${query.toString()}`);
+  }
 }
+
 

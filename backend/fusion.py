@@ -24,6 +24,7 @@ import numpy as np
 
 from backend.classifier import ECGClassifierService
 from backend.ecg_processor import PanTompkinsDetector, assess_signal_quality
+from backend.event_store import ClinicalEvent, event_store
 from backend.physiology import WindkesselModel
 from backend.schemas import (
     ClinicalAlert,
@@ -173,6 +174,25 @@ class MultimodalFusionEngine:
                     "model_version": pred.model_version,
                     "inference_latency_ms": pred.inference_latency_ms,
                 }
+                # Record to persistent event store if ectopic or anomaly
+                sev = "WARNING" if pred.predicted_class in ["V", "S", "F"] else "INFO"
+                event_store.record_event(
+                    ClinicalEvent(
+                        event_id=f"ML_{self.patient_id}_{int(self.current_sim_time * 10)}",
+                        session_id=self.session_id,
+                        timestamp=round(self.current_sim_time, 2),
+                        event_type="ML_INFERENCE",
+                        severity=sev,
+                        description=f"ECG Beat Classified: Class {pred.predicted_class} ({pred.class_label_meaning})",
+                        source_provenance=f"GNB Classifier v{pred.model_version}",
+                        category="MODEL_GENERATED",
+                        metadata={
+                            "predicted_class": pred.predicted_class,
+                            "class_scores": pred.class_scores,
+                            "snr_db": pred.snr_db,
+                        },
+                    )
+                )
 
     def _calculate_hrv(self) -> Optional[HRVMetrics]:
         """Calculates time-domain HRV from rolling RR intervals."""
@@ -359,6 +379,22 @@ class MultimodalFusionEngine:
             glucose=glucose_val,
         )
         self.active_alerts = alerts
+
+        # Persist new alerts into event_store
+        for al in alerts:
+            event_store.record_event(
+                ClinicalEvent(
+                    event_id=al.alert_id,
+                    session_id=self.session_id,
+                    timestamp=round(al.timestamp, 2),
+                    event_type="ALERT",
+                    severity=al.severity,
+                    description=f"{al.title}: {al.description}",
+                    source_provenance="Late Clinical Fusion (NEWS2)",
+                    category="DERIVED",
+                    metadata=al.evidence,
+                )
+            )
 
         # Compile Raw Observations dictionary (shallow view)
         raw_dict = {}

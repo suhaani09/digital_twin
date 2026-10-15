@@ -13,6 +13,8 @@ import { HemodynamicsPanel } from './components/HemodynamicsPanel';
 import { ScenarioPanel } from './components/ScenarioPanel';
 import { EventTimeline } from './components/EventTimeline';
 import { ExplainabilityPanel } from './components/ExplainabilityPanel';
+import { EvidenceUploadPanel } from './components/EvidenceUploadPanel';
+import type { ECGRecordingMetadata } from './types';
 
 export function App() {
   const [patientId, setPatientId] = useState<string>('100');
@@ -20,6 +22,10 @@ export function App() {
   const [rmssdTrend, setRmssdTrend] = useState<number[]>([]);
   const [bpTrend, setBpTrend] = useState<number[]>([]);
   const [presets, setPresets] = useState<ScenarioDefinition[]>([]);
+
+  // Synchronized timestamp state between ECG Explorer and Event Timeline
+  const [selectedTimestamp, setSelectedTimestamp] = useState<number | undefined>(undefined);
+  const [recordingMetadata, setRecordingMetadata] = useState<ECGRecordingMetadata | null>(null);
 
   // Connect WebSocket to real backend with stable callback
   const handleStateReceived = useCallback((state: DigitalTwinState) => {
@@ -37,17 +43,21 @@ export function App() {
 
   const { status: wsStatus, latestState } = useDigitalTwinWebSocket(handleStateReceived);
 
-  // Fetch preset scenarios & initial twin state immediately on mount (eliminating initial blank delay)
+  // Fetch preset scenarios, ECG metadata & initial twin state immediately on mount
   useEffect(() => {
     async function initDashboard() {
       try {
-        const [presetsRes, stateRes] = await Promise.all([
+        const [presetsRes, stateRes, metaRes] = await Promise.all([
           ApiClient.listPresetScenarios(),
           ApiClient.getTwinState('100'),
+          ApiClient.getECGMetadata().catch(() => null),
         ]);
         setPresets(presetsRes.scenarios);
         if (stateRes) {
           handleStateReceived(stateRes);
+        }
+        if (metaRes) {
+          setRecordingMetadata(metaRes);
         }
       } catch (err) {
         console.error('Failed to initialize dashboard data:', err);
@@ -131,6 +141,9 @@ export function App() {
               qualityStatus={activeState.signal_quality.status}
               snrDb={activeState.signal_quality.snr_db}
               isReplay={activeState.is_live_replay}
+              selectedTimestamp={selectedTimestamp}
+              onTimestampSelected={(t) => setSelectedTimestamp(t)}
+              metadata={recordingMetadata}
             />
           </div>
           <div className="lg:col-span-1">
@@ -173,16 +186,33 @@ export function App() {
           />
         </div>
 
-        {/* Row 4: Multimodal Ingestion Matrix & Event Timeline */}
+        {/* Row 4: Evidence Ingestion & Multimodal Fusion */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+          <EvidenceUploadPanel
+            patientId={patientId}
+            sessionId={activeState.session_id}
+            onEvidenceUploaded={() => {
+              // Refresh metadata when new ECG or evidence uploaded
+              ApiClient.getECGMetadata().then(setRecordingMetadata).catch(() => null);
+            }}
+          />
           <ModalityFusionPanel
             freshnessMap={activeState.modality_freshness}
             riskScore={activeState.clinical_risk_score}
           />
-          <EventTimeline alerts={activeState.active_alerts} simTimeSec={activeState.current_time} />
         </div>
 
-        {/* Row 5: What-If Simulation Experiments & Explainability */}
+        {/* Row 5: Clinical Event Timeline & Audit Log */}
+        <div className="grid grid-cols-1 gap-3">
+          <EventTimeline
+            alerts={activeState.active_alerts}
+            simTimeSec={activeState.current_time}
+            sessionId={activeState.session_id}
+            onEventSelected={(t) => setSelectedTimestamp(t)}
+          />
+        </div>
+
+        {/* Row 6: What-If Simulation Experiments & Explainability */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
           <div className="lg:col-span-2">
             <ScenarioPanel presets={presets} />
