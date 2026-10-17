@@ -43,21 +43,31 @@ export const ECGWaveform: React.FC<ECGWaveformProps> = ({
   } | null>(null);
   const [isLoadingWindow, setIsLoadingWindow] = useState(false);
 
+  // Reset historical inspect state when patient changes
+  useEffect(() => {
+    if (metadata?.patient_id) {
+      setInspectMode('LIVE');
+      setInspectedSamples([]);
+      setInspectMetadata(null);
+      setTargetTime(0.0);
+    }
+  }, [metadata?.patient_id]);
+
   // Sync targetTime if parent selectedTimestamp changes (e.g. from event click)
   useEffect(() => {
     if (selectedTimestamp !== undefined && selectedTimestamp !== null) {
       setTargetTime(selectedTimestamp);
       setInspectMode('HISTORICAL');
-      fetchWindow(selectedTimestamp, windowSec);
+      fetchWindow(selectedTimestamp, windowSec, metadata?.patient_id);
     }
-  }, [selectedTimestamp]);
+  }, [selectedTimestamp, metadata?.patient_id]);
 
   const durationSec = metadata?.duration_sec || 27.78;
 
-  const fetchWindow = async (timeSec: number, winSec: number) => {
+  const fetchWindow = async (timeSec: number, winSec: number, pId?: string) => {
     setIsLoadingWindow(true);
     try {
-      const res = await ApiClient.getECGWindow(timeSec, winSec);
+      const res = await ApiClient.getECGWindow(timeSec, winSec, pId || metadata?.patient_id);
       setInspectedSamples(res.samples);
       setInspectMetadata({
         startTime: res.start_time_sec,
@@ -76,7 +86,7 @@ export const ECGWaveform: React.FC<ECGWaveformProps> = ({
     setTargetTime(newTime);
     setInspectMode('HISTORICAL');
     if (onTimestampSelected) onTimestampSelected(newTime);
-    fetchWindow(newTime, windowSec);
+    fetchWindow(newTime, windowSec, metadata?.patient_id);
   };
 
   const handleStepWindow = (forward: boolean) => {
@@ -87,6 +97,8 @@ export const ECGWaveform: React.FC<ECGWaveformProps> = ({
 
   const handleReturnToLive = () => {
     setInspectMode('LIVE');
+    setInspectedSamples([]);
+    setInspectMetadata(null);
   };
 
   // Determine active samples to display
@@ -196,10 +208,13 @@ export const ECGWaveform: React.FC<ECGWaveformProps> = ({
     <div className="card space-y-2">
       {/* Header bar */}
       <div className="flex flex-wrap justify-between items-center gap-2">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <Activity className="w-4 h-4 text-emerald-400" />
           <span className="text-xs font-semibold uppercase tracking-wider text-slate-300">
-            Time-Aware ECG Waveform Explorer (Lead II)
+            Time-Aware ECG Waveform Explorer ({metadata?.channel_lead || 'Lead II'})
+          </span>
+          <span className="badge badge-purple">
+            Record #{metadata?.patient_id || '100'} ({metadata?.is_synthetic ? 'Synthetic Fixture' : 'MIT-BIH Arrhythmia'})
           </span>
           <span className={`badge ${qualityStatus === 'ACCEPTABLE' ? 'badge-green' : 'badge-amber'}`}>
             SQI: {qualityStatus} ({snrDb} dB)

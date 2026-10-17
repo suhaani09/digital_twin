@@ -66,18 +66,36 @@ export function App() {
     initDashboard();
   }, [handleStateReceived]);
 
-  const handlePatientChanged = (newPid: string) => {
+  const handlePatientChanged = async (newPid: string) => {
     setPatientId(newPid);
     // Clear trend buffers on session change
     setHrTrend([]);
     setRmssdTrend([]);
     setBpTrend([]);
+    setSelectedTimestamp(undefined);
+    try {
+      const [metaRes, stateRes] = await Promise.all([
+        ApiClient.getECGMetadata(newPid).catch(() => null),
+        ApiClient.getTwinState(newPid).catch(() => null),
+      ]);
+      if (metaRes) setRecordingMetadata(metaRes);
+      if (stateRes) handleStateReceived(stateRes);
+    } catch (err) {
+      console.error('Failed to reload patient metadata:', err);
+    }
   };
 
-  const handleReset = () => {
+  const handleReset = async () => {
     setHrTrend([]);
     setRmssdTrend([]);
     setBpTrend([]);
+    setSelectedTimestamp(undefined);
+    try {
+      const metaRes = await ApiClient.getECGMetadata(patientId).catch(() => null);
+      if (metaRes) setRecordingMetadata(metaRes);
+    } catch (err) {
+      console.error('Failed to reload metadata on reset:', err);
+    }
   };
 
   // Fallback state if WebSocket is awaiting initial packet

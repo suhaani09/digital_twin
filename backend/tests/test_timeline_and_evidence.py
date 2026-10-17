@@ -176,3 +176,42 @@ def test_historical_state_reconstruction_at_timestamp():
     assert "ecg_window" in data
     assert data["ecg_window"]["center_timestamp_sec"] == 5.5
 
+
+def test_multi_record_dataset_distinct_waveforms():
+    """
+    Verifies that selecting distinct dataset records (e.g. 100 vs 106)
+    returns their actual individual clinical signals rather than a static default.
+    """
+    client = TestClient(app)
+
+    # 1. Fetch metadata and window for Record 100
+    meta_100 = client.get("/ecg/metadata?patient_id=100").json()
+    win_100 = client.get("/ecg/window?patient_id=100&timestamp=1.0&window_sec=1.0").json()
+
+    assert meta_100["patient_id"] == "100"
+    assert win_100["patient_id"] == "100"
+    assert len(win_100["samples"]) == 360
+
+    # 2. Fetch metadata and window for Record 106
+    meta_106 = client.get("/ecg/metadata?patient_id=106").json()
+    win_106 = client.get("/ecg/window?patient_id=106&timestamp=1.0&window_sec=1.0").json()
+
+    assert meta_106["patient_id"] == "106"
+    assert win_106["patient_id"] == "106"
+    assert len(win_106["samples"]) == 360
+
+    # 3. Assert genuine clinical distinction in actual sample values
+    assert win_100["samples"] != win_106["samples"]
+    diff = sum(abs(a - b) for a, b in zip(win_100["samples"], win_106["samples"])) / len(win_100["samples"])
+    assert diff > 0.05  # Average difference between distinct subject rhythms is substantial
+
+
+def test_missing_record_raises_explicit_error():
+    """Verifies that an unavailable record produces an explicit error without falling back to a fake waveform."""
+    client = TestClient(app)
+    # Using a non-existent record that is not in data/mitdb/
+    # Handled by endpoint returning 404
+    resp = client.get("/ecg/metadata?patient_id=NON_EXISTENT_999")
+    assert resp.status_code in [404, 500]
+
+

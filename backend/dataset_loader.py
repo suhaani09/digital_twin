@@ -92,8 +92,14 @@ class MITBIHLoader:
             dat_path = os.path.join(self.data_dir, f"{record_id}.dat")
 
             if os.path.exists(hea_path) and os.path.exists(dat_path):
-                rec = wfdb.rdrecord(os.path.join(self.data_dir, record_id), sampto=max_samples)
-                ann = wfdb.rdann(os.path.join(self.data_dir, record_id), "atr", sampto=max_samples)
+                # Read full record then slice if needed to avoid 'sampto must be shorter than signal length'
+                rec = wfdb.rdrecord(os.path.join(self.data_dir, record_id))
+                ann = wfdb.rdann(os.path.join(self.data_dir, record_id), "atr")
+                if max_samples and max_samples < len(rec.p_signal):
+                    rec.p_signal = rec.p_signal[:max_samples]
+                    valid_ann = ann.sample < max_samples
+                    ann.sample = ann.sample[valid_ann]
+                    ann.symbol = [s for s, v in zip(ann.symbol, valid_ann) if v]
             else:
                 # Online download from PhysioNet mitdb with max_samples constraint
                 rec = wfdb.rdrecord(record_id, pn_dir="mitdb", sampto=max_samples or 3600)
@@ -118,8 +124,10 @@ class MITBIHLoader:
             )
 
         except Exception as e:
-            # Fallback to clearly labeled synthetic record to ensure testability without network
-            return self.create_synthetic_record(record_id=f"SYNTH_{record_id}")
+            # If synthetic record was explicitly requested with SYNTH_ prefix
+            if str(record_id).startswith("SYNTH_"):
+                return self.create_synthetic_record(record_id=str(record_id))
+            raise FileNotFoundError(f"MIT-BIH Record '{record_id}' is unavailable locally and could not be fetched from PhysioNet: {e}")
 
     def create_synthetic_record(
         self,

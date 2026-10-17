@@ -122,13 +122,21 @@ export class ApiClient {
   }
 
   // --- Feature 1: Time-Aware ECG Explorer APIs ---
-  static async getECGMetadata() {
-    return this.request<import('./types').ECGRecordingMetadata>('/ecg/metadata');
+  static async getECGMetadata(patientId?: string) {
+    const query = new URLSearchParams();
+    if (patientId) query.set('patient_id', patientId);
+    const qs = query.toString() ? `?${query.toString()}` : '';
+    return this.request<import('./types').ECGRecordingMetadata>(`/ecg/metadata${qs}`);
   }
 
-  static async getECGWindow(timestamp: number, windowSec: number = 2.0) {
+  static async getECGWindow(timestamp: number, windowSec: number = 2.0, patientId?: string) {
+    const query = new URLSearchParams({
+      timestamp: String(timestamp),
+      window_sec: String(windowSec),
+    });
+    if (patientId) query.set('patient_id', patientId);
     return this.request<import('./types').ECGWindowResponse>(
-      `/ecg/window?timestamp=${encodeURIComponent(timestamp)}&window_sec=${encodeURIComponent(windowSec)}`
+      `/ecg/window?${query.toString()}`
     );
   }
 

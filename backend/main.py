@@ -105,10 +105,13 @@ def get_twin_state(patient_id: Optional[str] = None, session_id: Optional[str] =
 
 
 @app.post("/twin/select-session")
-def select_session(patient_id: str, session_id: str = "SESSION_1"):
+async def select_session(patient_id: str, session_id: str = "SESSION_1"):
     global current_patient_id, current_session_id
     current_patient_id = patient_id
     current_session_id = session_id
+    await replay_service.stop()
+    replay_service.load_patient_record(patient_id)
+    replay_service.session_id = session_id
     engine = get_or_create_engine(patient_id, session_id)
     return {
         "message": f"Selected patient {patient_id} with session {session_id}",
@@ -380,23 +383,32 @@ async def run_scenario_experiment(req: ScenarioRunRequest):
 # =====================================================================
 
 @app.get("/ecg/metadata")
-def get_ecg_metadata():
-    """Returns timing, frequency, sample count, and duration of active recording."""
-    return replay_service.get_metadata()
+def get_ecg_metadata(patient_id: Optional[str] = Query(None, description="Patient/record ID")):
+    """Returns timing, frequency, sample count, and duration of active or requested recording."""
+    p_id = patient_id or current_patient_id
+    try:
+        return replay_service.get_metadata(patient_id=p_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @app.get("/ecg/window")
 def get_ecg_window(
     timestamp: float = Query(..., description="Target center timestamp in seconds"),
     window_sec: float = Query(2.0, description="Window size in seconds (e.g. 1.0 to 10.0)"),
+    patient_id: Optional[str] = Query(None, description="Patient/record ID"),
 ):
     """
-    Returns windowed ECG samples centered around the requested timestamp.
+    Returns windowed ECG samples centered around the requested timestamp for the record.
     Does not mutate or interrupt active playback replay.
     """
     if window_sec < 0.2 or window_sec > 30.0:
         raise HTTPException(status_code=400, detail="window_sec must be between 0.2 and 30.0 seconds")
-    return replay_service.get_window(center_timestamp_sec=timestamp, window_sec=window_sec)
+    p_id = patient_id or current_patient_id
+    try:
+        return replay_service.get_window(center_timestamp_sec=timestamp, window_sec=window_sec, patient_id=p_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 # =====================================================================

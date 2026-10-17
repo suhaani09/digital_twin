@@ -122,10 +122,11 @@ class ReplayService:
         self.is_synthetic = False
         self.current_sample_idx = 0
 
-    def get_metadata(self) -> dict:
-        """Returns metadata for the currently active recording."""
-        if self.signal_data is None:
-            self.load_patient_record(self.patient_id)
+    def get_metadata(self, patient_id: Optional[str] = None) -> dict:
+        """Returns metadata for the currently active recording or requested patient."""
+        p_id = str(patient_id) if patient_id else self.patient_id
+        if self.signal_data is None or self.patient_id != p_id:
+            self.load_patient_record(p_id)
         duration_sec = self.total_samples / self.fs if self.fs > 0 else 0.0
         current_time = self.current_sample_idx / self.fs if self.fs > 0 else 0.0
         return {
@@ -144,10 +145,11 @@ class ReplayService:
             "speed": self.speed,
         }
 
-    def get_window(self, center_timestamp_sec: float, window_sec: float = 2.0) -> dict:
+    def get_window(self, center_timestamp_sec: float, window_sec: float = 2.0, patient_id: Optional[str] = None) -> dict:
         """Returns a window of samples centered around center_timestamp_sec without mutating replay state."""
-        if self.signal_data is None:
-            self.load_patient_record(self.patient_id)
+        p_id = str(patient_id) if patient_id else self.patient_id
+        if self.signal_data is None or self.patient_id != p_id:
+            self.load_patient_record(p_id)
 
         center_idx = int(center_timestamp_sec * self.fs)
         half_samples = int((window_sec / 2.0) * self.fs)
@@ -160,6 +162,7 @@ class ReplayService:
         actual_end_sec = end_idx / self.fs if self.fs > 0 else 0.0
 
         return {
+            "patient_id": self.patient_id,
             "center_timestamp_sec": round(center_timestamp_sec, 3),
             "window_sec": window_sec,
             "start_time_sec": round(actual_start_sec, 3),
